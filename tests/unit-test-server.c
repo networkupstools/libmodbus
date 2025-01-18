@@ -179,6 +179,9 @@ int main(int argc, char *argv[])
 
     for (;;) {
         do {
+#ifdef _WIN32
+            fflush(stdout);
+#endif
             rc = modbus_receive(ctx, query);
             /* Filtered queries return 0 */
         } while (rc == 0);
@@ -260,6 +263,9 @@ int main(int argc, char *argv[])
             }
         }
 
+#ifdef _WIN32
+        fflush(stdout);
+#endif
         rc = modbus_reply(ctx, query, rc, mb_mapping);
         if (rc == -1) {
             break;

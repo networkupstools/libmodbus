@@ -739,17 +739,23 @@ int main(int argc, char *argv[])
         usleep(1000000);
         modbus_flush(ctx);
 
-#if defined(_WIN32) || defined(__FreeBSD__) || defined(__OpenBSD__)
-         /* Timeout of 20ms between bytes, allow for 2*16+1
-          * Windows sleep seems to be at least 15ms always
-          * Windows sleep seems to be at least 15ms always.
-          * For some reason, FreeBSD 12 and OpenBSD 6.5 also
-          * tended to fail with 7ms variant as "gmake check"
-          * but pass in
-          * gmake -j 8 && ( ./tests/unit-test-server|cat & sleep 1 ; ./tests/unit-test-client|cat )
-          */
+#if defined(_WIN32)
+        /* Timeout of 20ms between bytes, allow for 2*16+1
+         * Windows sleep seems to be at least 15ms always.
+         */
         TEST_TITLE("2/2 Adapted byte timeout (33ms > 20ms)");
         modbus_set_byte_timeout(ctx, 0, 33000);
+        rc = modbus_read_registers(
+            ctx, UT_REGISTERS_ADDRESS_BYTE_SLEEP_20_MS, 1, tab_rp_registers);
+#elif defined(__FreeBSD__) || defined(__OpenBSD__)
+        /* For some reason, FreeBSD 12 and OpenBSD 6.5 also
+         * tended to fail with 7ms and even 33ms variants
+         * as "gmake check", but passed in
+         * gmake -j 8 && ( ./tests/unit-test-server|cat & sleep 1 ; ./tests/unit-test-client|cat )
+         * An even longer timeout seems to satisfy all of them.
+         */
+        TEST_TITLE("2/2 Adapted byte timeout (66ms > 20ms)");
+        modbus_set_byte_timeout(ctx, 0, 66000);
         rc = modbus_read_registers(
             ctx, UT_REGISTERS_ADDRESS_BYTE_SLEEP_20_MS, 1, tab_rp_registers);
 #else

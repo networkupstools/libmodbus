@@ -54,8 +54,11 @@ const uint16_t UT_REGISTERS_ADDRESS_SPECIAL = 0x170;
 const uint16_t UT_REGISTERS_ADDRESS_INVALID_TID_OR_SLAVE = 0x171;
 /* The server will wait for 1 second before replying to test timeout */
 const uint16_t UT_REGISTERS_ADDRESS_SLEEP_500_MS = 0x172;
-/* The server will wait for 5 ms before sending each byte */
+/* The server will wait for 5 ms before sending each byte
+ * WARNING: this may be too short for WIN32 */
 const uint16_t UT_REGISTERS_ADDRESS_BYTE_SLEEP_5_MS = 0x173;
+/* The server will wait for 20 ms before sending each byte */
+const uint16_t UT_REGISTERS_ADDRESS_BYTE_SLEEP_20_MS = 0x174;
 
 /* If the following value is used, a bad response is sent.
    It's better to test with a lower value than

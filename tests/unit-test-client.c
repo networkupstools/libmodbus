@@ -298,6 +298,10 @@ int main(int argc, char *argv[])
                                                           : UT_INPUT_REGISTERS_NB;
     memset(tab_rp_registers, 0, nb_points * sizeof(uint16_t));
 
+    /* Wait remaining bytes before flushing */
+    usleep(1000000);
+    modbus_flush(ctx);
+
     TEST_TITLE("4/5 modbus_write_and_read_registers");
     /* Write registers to zero from tab_rp_registers and store read registers
        into tab_rp_registers. So the read registers must set to 0, except the

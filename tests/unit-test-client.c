@@ -98,6 +98,16 @@ int main(int argc, char *argv[])
 
     memset(last_test_title, 0, sizeof(last_test_title));
 
+#ifdef _WIN32
+# ifdef HAVE_SETVBUF
+    // auto-flush so logs are comprehensible when the
+    // same console collects output of server and client
+    // https://stackoverflow.com/a/214292/4715872
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
+# endif
+#endif
+
     if (argc > 1) {
         if (strcmp(argv[1], "tcp") == 0) {
             use_backend = TCP;

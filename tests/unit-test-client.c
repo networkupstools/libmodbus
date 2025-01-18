@@ -731,6 +731,9 @@ int main(int argc, char *argv[])
         /* Wait remaining bytes before flushing */
         usleep(11 * 5000);
         modbus_flush(ctx);
+        /* ...and then some, just in case (e.g. kernel delays, clock jitter, multi-CPU...) */
+        usleep(1000000);
+        modbus_flush(ctx);
 
         /* Timeout of 7ms between bytes */
         TEST_TITLE("2/2 Adapted byte timeout (7ms > 5ms)");

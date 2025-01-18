@@ -221,7 +221,7 @@ int main(int argc, char *argv[])
             } else if (address == UT_REGISTERS_ADDRESS_SLEEP_500_MS) {
                 printf("Sleep 0.5 s before replying\n");
                 usleep(500000);
-            } else if (address == UT_REGISTERS_ADDRESS_BYTE_SLEEP_5_MS) {
+            } else if (address == UT_REGISTERS_ADDRESS_BYTE_SLEEP_5_MS || address == UT_REGISTERS_ADDRESS_BYTE_SLEEP_20_MS) {
                 /* Test low level only available in TCP mode */
                 /* Catch the reply and send reply byte a byte */
                 uint8_t req[] = "\x00\x1C\x00\x00\x00\x05\xFF\x03\x02\x00\x00";
@@ -236,7 +236,11 @@ int main(int argc, char *argv[])
                 req[1] = query[1];
                 for (i = 0; i < req_length; i++) {
                     printf("(%.2X)", req[i]);
-                    usleep(5000);
+                    if (address == UT_REGISTERS_ADDRESS_BYTE_SLEEP_5_MS) {
+                        usleep(5000);
+                    } else if (address == UT_REGISTERS_ADDRESS_BYTE_SLEEP_20_MS) {
+                        usleep(20000);
+                    }
                     rc = send(w_s, (const char *) (req + i), 1, MSG_NOSIGNAL);
                     if (rc == -1) {
                         break;

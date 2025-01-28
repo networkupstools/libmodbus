@@ -427,6 +427,8 @@ int _modbus_receive_msg(modbus_t *ctx, uint8_t *msg, msg_type_t msg_type)
                 wsa_err = WSAGetLastError();
 
                 // no equivalent to ETIMEDOUT when select fails on Windows
+                // but we still need it to forget the invalid answer
+                modbus_flush(ctx);
                 if (wsa_err == WSAENETDOWN || wsa_err == WSAENOTSOCK) {
                     modbus_close(ctx);
                     modbus_connect(ctx);

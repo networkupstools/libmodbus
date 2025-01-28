@@ -98,6 +98,16 @@ int main(int argc, char *argv[])
 
     memset(last_test_title, 0, sizeof(last_test_title));
 
+#ifdef _WIN32
+# ifdef HAVE_SETVBUF
+    // auto-flush so logs are comprehensible when the
+    // same console collects output of server and client
+    // https://stackoverflow.com/a/214292/4715872
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IOLBF, 0);
+# endif
+#endif
+
     if (argc > 1) {
         if (strcmp(argv[1], "tcp") == 0) {
             use_backend = TCP;
@@ -287,6 +297,10 @@ int main(int argc, char *argv[])
     nb_points = (UT_REGISTERS_NB > UT_INPUT_REGISTERS_NB) ? UT_REGISTERS_NB
                                                           : UT_INPUT_REGISTERS_NB;
     memset(tab_rp_registers, 0, nb_points * sizeof(uint16_t));
+
+    /* Wait remaining bytes before flushing */
+    usleep(1000000);
+    modbus_flush(ctx);
 
     TEST_TITLE("4/5 modbus_write_and_read_registers");
     /* Write registers to zero from tab_rp_registers and store read registers
@@ -721,13 +735,46 @@ int main(int argc, char *argv[])
         /* Wait remaining bytes before flushing */
         usleep(11 * 5000);
         modbus_flush(ctx);
+        /* ...and then some, just in case (e.g. kernel delays, clock jitter, multi-CPU...) */
+        usleep(1000000);
+        modbus_flush(ctx);
 
         /* Timeout of 7ms between bytes */
-        TEST_TITLE("2/2 Adapted byte timeout (7ms > 5ms)");
+        TEST_TITLE("2/2-A Adapted byte timeout (7ms > 5ms)");
         modbus_set_byte_timeout(ctx, 0, 7000);
         rc = modbus_read_registers(
             ctx, UT_REGISTERS_ADDRESS_BYTE_SLEEP_5_MS, 1, tab_rp_registers);
-        ASSERT_TRUE(rc == 1, "FAILED (rc: %d != 1)", rc);
+        if (rc == 1) {
+            ASSERT_TRUE(rc == 1, "FAILED (rc: %d != 1)", rc);
+        } else {
+            /* Timeout of 20ms between bytes, allow for 2*16+1
+             * Windows sleep seems to be at least 15ms always.
+             */
+            usleep(1000000);
+            modbus_flush(ctx);
+            TEST_TITLE("2/2-B Adapted byte timeout (33ms > 20ms)");
+            modbus_set_byte_timeout(ctx, 0, 33000);
+            rc = modbus_read_registers(
+                ctx, UT_REGISTERS_ADDRESS_BYTE_SLEEP_20_MS, 1, tab_rp_registers);
+
+            if (rc == 1) {
+                ASSERT_TRUE(rc == 1, "FAILED (rc: %d != 1)", rc);
+            } else {
+                /* For some reason, FreeBSD 12 and OpenBSD 6.5 also
+                 * tended to fail with 7ms and even 33ms variants
+                 * as "gmake check", but passed in
+                 * gmake -j 8 && ( ./tests/unit-test-server|cat & sleep 1 ; ./tests/unit-test-client|cat )
+                 * An even longer timeout seems to satisfy all of them.
+                 */
+                usleep(1000000);
+                modbus_flush(ctx);
+                TEST_TITLE("2/2-C Adapted byte timeout (66ms > 20ms)");
+                modbus_set_byte_timeout(ctx, 0, 66000);
+                rc = modbus_read_registers(
+                    ctx, UT_REGISTERS_ADDRESS_BYTE_SLEEP_20_MS, 1, tab_rp_registers);
+                ASSERT_TRUE(rc == 1, "FAILED (rc: %d != 1)", rc);
+            }
+        }
     }
 
     /* Restore original byte timeout */

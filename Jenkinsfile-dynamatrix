@@ -1,0 +1,240 @@
+#!/usr/bin/env groovy
+// ^^^ For syntax highlighters
+
+// See https://github.com/networkupstools/jenkins-dynamatrix/ for the lib
+// Agent setup evolves at https://ci.networkupstools.org/computer/
+// NOTE: The "${BRANCH_NAME}" below IS NOT A VARIABLE!
+//       Special notation per custom plugin build including changes from
+//       https://github.com/jenkinsci/pipeline-groovy-lib-plugin/pull/19/
+@Library('jenkins-dynamatrix@${BRANCH_NAME}') _
+import org.nut.dynamatrix.dynamatrixGlobalState;
+import org.nut.dynamatrix.*;
+
+    // dynacfgBase = Base configuration for Dynamatrix for this pipeline
+    // dynacfgPipeline = Step-dependent setup in sub-maps
+    def dynacfgBase = [:]
+    def dynacfgPipeline = [:]
+
+    // NOTE: These can be further disabled or active in different combo specs
+    // below based on branch names. Also note that the values are somewhat
+    // "inversed" -- e.g. that "disabledSomething = false" means "enable it".
+    dynacfgPipeline.disableSlowBuildAutotools = false
+
+    // At this time, GCC succeeds building C89/GNU89 mode for NUT
+    // while CLANG complains about things we can't fix easily.
+    dynacfgPipeline.axisCombos_COMPILER_GCC = [~/COMPILER=GCC/]
+    dynacfgPipeline.axisCombos_COMPILER_NOT_GCC = [~/COMPILER=(?!GCC)/]
+
+    // Avoid requiring success on GCC so old we can't manage warnings by CLI or pragmas:
+    dynacfgPipeline.axisCombos_COMPILER_GCC_TOO_OLD = [~/COMPILER=GCC/, ~/GCCVER=([0123]\.|4\.[0123])/]
+
+    dynacfgPipeline.traceBuildShell_configureEnvvars = false // true
+    dynacfgPipeline.traceBuildShell = false // true
+
+    dynacfgPipeline.failFast = //true //
+        false
+
+    // How long can a single "slow-build stage" run before we
+    // consider that the build agent is stuck or network dropped?
+    // The dynamatrix should try to re-schedule this scenario then.
+    dynacfgPipeline.dsbcStageTimeoutSettings = [
+        time: 2,
+        unit: 'HOURS'
+        ]
+
+    // Note: this setting causes a lot of noise in build summary page and
+    // parent job definition (PR, branch...) overview page on Jenkins,
+    // by reporting dozens of lines for each analyzer ID ever published.
+    // Do not enable instant (non-delayed, "false" here) reports for the
+    // "master" and equivalent branch builds.
+    dynacfgPipeline.delayedIssueAnalysis = //false //
+        true
+
+    //dynacfgBase['commonLabelExpr'] = 'libmodbus-builder'
+    dynacfgBase['commonLabelExpr'] = 'nut-builder'
+    dynacfgBase['dynamatrixAxesLabels'] = //[~/^OS_.+/]
+        ['OS_FAMILY', 'OS_DISTRO', '${COMPILER}VER', 'ARCH${ARCH_BITS}']
+    dynacfgBase['dynamatrixAxesCommonEnv'] = [ ['LANG=C', 'LC_ALL=C', 'TZ=UTC'] ]
+
+    dynacfgPipeline.stashnameSrc = 'libmodbus-ci-src'
+
+    // Avoid mix-up of bitness-related requests and abilities
+    dynacfgPipeline.axisCombos_ARCH32x64 = [~/BITS=32/, ~/ARCH_BITS=64/]
+    dynacfgPipeline.axisCombos_ARCH64x32 = [~/BITS=64/, ~/ARCH_BITS=32/]
+
+    // Some (but not all) builds skip strict-C standard due to
+    // current build failures with its requirements
+    dynacfgPipeline.axisCombos_STRICT_C = [~/CSTDVARIANT=c/]
+    dynacfgPipeline.axisCombos_GNU_C = [~/CSTDVARIANT=gnu/]
+
+    // Here we consider native-platform builds on a Windows box
+    // (possibly with need for "bat" instead of "sh" steps):
+    dynacfgPipeline.axisCombos_WINDOWS = [~/OS_FAMILY=windows/]
+    dynacfgPipeline.axisCombos_NOT_WINDOWS = [~/OS_FAMILY=(?!windows)/]
+
+    // TODO: some cross-build enviroments like Linux with mingw?
+    // Currently done as an explicit scenario below...
+    dynacfgPipeline.axisCombos_WINDOWS_CROSS = [~/OS_FAMILY=(mingw|mingw32|mingw64|msys2)/]
+    dynacfgPipeline.axisCombos_NOT_WINDOWS_CROSS = [~/OS_FAMILY=(?!(mingw|mingw32|mingw64|msys2))/]
+
+    dynacfgPipeline.excludeCombos_DEFAULT_STRICT_C = [
+        dynacfgPipeline.axisCombos_STRICT_C,
+        dynacfgPipeline.axisCombos_ARCH32x64,
+        dynacfgPipeline.axisCombos_ARCH64x32
+        ]
+
+    // At a minimum, we don't want to mess up our arches:
+    dynacfgPipeline.excludeCombos_DEFAULT = [
+        dynacfgPipeline.axisCombos_ARCH32x64,
+        dynacfgPipeline.axisCombos_ARCH64x32
+        ]
+
+    if (!dynacfgPipeline.containsKey('buildPhases')) {
+        dynacfgPipeline.buildPhases = [:]
+    }
+
+    // Imported from jenkins-dynamatrix JSL vars/autotools.groovy:
+    // a workaround for the cases of curiously missing MAKE envvar...
+    dynacfgPipeline.buildPhases['distcheck'] = """( if [ x"\${MAKE-}" = x ]; then echo "WARNING: MAKE is somehow unset, defaulting!" >&2; MAKE=gmake; fi; eval \${CONFIG_ENVVARS} time \${MAKE} \${MAKE_OPTS} distcheck DISTCHECK_FLAGS=\${CONFIG_OPTS:+\\"\$CONFIG_OPTS\\"} )"""
+
+    dynacfgPipeline.slowBuildDefaultBody_autotools = { def delegate -> setDelegate(delegate)
+        // Be sure to have a fixed resolved String here ASAP:
+        String stageNameClone = "${stageName}"
+        def dsbcClone = dsbc.clone()
+
+        stage('Investigate envvars (Autotools DEBUG)') {
+            echo "Running default custom build for '${stageNameClone}' ==> ${dsbcClone.toString()}" +
+                (dynacfgPipeline?.configureEnvvars ? "" : " (note: has no dynacfgPipeline.configureEnvvars)")
+            // Trick about endianness via ELF binary header picked up from https://serverfault.com/a/749469/490516
+            sh label: 'Inspect initial envvars', script: """ hostname; date -u; uname -a
+echo "LONG_BIT:`getconf LONG_BIT` WORD_BIT:`getconf WORD_BIT`" || true
+if command -v xxd >/dev/null ; then xxd -c 1 -l 6 | tail -1; else if command -v od >/dev/null; then od -N 1 -j 5 -b | head -1 ; else hexdump -s 5 -n 1 -C | head -1; fi; fi < /bin/ls 2>/dev/null | awk '(\$2 == 1){print "Endianness: LE"}; (\$2 == 2){print "Endianness: BE"}' || true
+echo "\${MATRIX_TAG}"
+set | sort -n """
+            if (dynacfgPipeline?.configureEnvvars) {
+                sh label: 'Apply CONFIG_ENVVARS', script: """ set +x
+echo "Applying CONFIG_ENVVARS:"
+#set -xv
+${dynacfgPipeline.configureEnvvars}
+set | sort -n """
+            }
+        }
+
+        withEnvOptional(dynacfgPipeline.defaultTools) {
+            // One build per node, port conflict in tests
+            def nodeName = env?.NODE_NAME
+            if (!nodeName) {
+                try {
+                    // https://stackoverflow.com/a/74035214/4715872
+                    nodeName = org.jenkinsci.plugins.workflow.cps.CpsThread.findAll(){ x -> x instanceof Computer }[0].getNode()
+                } catch (Throwable ignored) {}
+            }
+            def bodyCI = {
+                stage('Unstash sources') {
+                    unstashCleanSrc(dynacfgPipeline.stashnameSrc)
+                }
+
+                buildMatrixCellCI(dynacfgPipeline, dsbcClone, stageNameClone)
+                //buildMatrixCellCI(dynacfgPipeline, dsbc, stageName)
+            }
+            if (nodeName) {
+                def bodyCItmp = bodyCI
+                bodyCI = {
+                    lock(resource: "libmodbus:${nodeName}", quantity: 1) {
+                        bodyCItmp()
+                    }
+                }
+            }
+            bodyCI()
+        }
+    }
+
+    dynacfgPipeline.slowBuildDefaultBody = dynacfgPipeline.slowBuildDefaultBody_autotools
+
+    dynacfgPipeline.slowBuild = [
+[name: 'Default autotools driven build with nearly default configuration (enable warnings and libusb), bitness and warning levels on each NUT CI farm platform (but with fatal warnings as of gnu99/gnu++11, must pass where enabled)',
+         disabled: dynacfgPipeline.disableSlowBuildAutotools,
+         //branchRegexSource: ~/^(PR-.+|fightwarn.*)$/,
+         //branchRegexTarget: dynacfgPipeline.branchStableRegex,
+         //branchRegexTarget: ~/fightwarn/,
+         //appliesToChangedFilesRegex: dynacfgPipeline.appliesToChangedFilesRegex_C,
+         'getParStages': { def dynamatrix, Closure body ->
+            return dynamatrix.generateBuild([
+                //commonLabelExpr: dynacfgBase.commonLabelExpr,
+                //defaultDynamatrixConfig: dynacfgBase.defaultDynamatrixConfig,
+                requiredNodelabels: [],
+                excludedNodelabels: [],
+
+                dynamatrixAxesVirtualLabelsMap: [
+                    //'BITS': [32, 64],
+                    // 'CSTDVERSION': ['03', '2a'],
+                    //'CSTDVERSION_${KEY}': [ ['c': '03', 'cxx': '03'], ['c': '99', 'cxx': '98'], ['c': '17', 'cxx': '2a'], 'ansi' ],
+                    //'CSTDVERSION_${KEY}': [ ['c': '03', 'cxx': '03'], ['c': '99', 'cxx': '98'], ['c': '17', 'cxx': '2a'] ],
+                    'CSTDVERSION_${KEY}': [ ['c': '99', 'cxx': '11'] ],
+                    'CSTDVARIANT': ['gnu']
+                    ],
+                dynamatrixAxesCommonEnv: [
+                    // One set of several simultaneously exported envvars!
+                    // CONFIG_OPTS are picked up by our dynamatrix configuration
+                    // and substituted into shell "as is" for normal builds
+                    // (so splitting into many tokens), or quoted as a single
+                    // token DISTCHECK_FLAGS in its stage (split by make later).
+                    ['LANG=C','LC_ALL=C','TZ=UTC',
+                     'CONFIG_OPTS=--enable-Werror --with-libusb=auto --enable-static --enable-shared',
+                     'PKG_CONFIG_PATH=/opt/ooce/lib/${BITS}/pkgconfig',
+		     'AUTOMAKE_VERSION=1.16','AUTOCONF_VERSION=2.69'
+                    ]
+                    ],
+
+                mergeMode: [ 'dynamatrixAxesVirtualLabelsMap': 'replace', 'excludeCombos': 'merge' ],
+                allowedFailure: [
+                    dynacfgPipeline.axisCombos_WINDOWS,
+                    dynacfgPipeline.axisCombos_STRICT_C
+                    ],
+                runAllowedFailure: true,
+                //dynamatrixAxesLabels: ['OS_FAMILY', 'OS_DISTRO', '${COMPILER}VER', 'ARCH${ARCH_BITS}'],
+                //dynamatrixAxesLabels: [~/^OS/, '${COMPILER}VER', 'ARCH${ARCH_BITS}'],
+                dynamatrixAxesLabels: [~/^OS_DISTRO/, 'COMPILER'],
+                excludeCombos: dynacfgPipeline.excludeCombos_DEFAULT_STRICT_C
+                    + [dynacfgPipeline.axisCombos_WINDOWS_CROSS]
+                ], body)
+            }, // getParStages
+        //'bodyParStages': {}
+        ] // one slowBuild filter configuration, autotools-everywhere
+    ]
+
+    dynacfgPipeline.notifyHandler = {
+        def summary = null
+        try {
+            summary = dynamatrix.toStringStageCountDump()
+        } catch (Throwable t) {}
+
+        if (summary == null || summary == "") {
+            ircNotify (notificationStrategy:'FAILURE_AND_FIXED')
+        } else {
+            ircNotify (notificationStrategy:'FAILURE_AND_FIXED', customMessage: summary)
+        }
+    }
+
+///////////////////////////////////////////////////////////////////////////
+
+// Hacky big switch for a max debug option
+//if (true)  // <<< (Un-)comment away in select runs/branches
+//if (false) // <<< (Un-)comment away in select runs/branches
+if ( env?.BRANCH_NAME ==~ /.*verbose.*/ )
+{
+    dynamatrixGlobalState.enableDebugTrace = true
+    dynamatrixGlobalState.enableDebugErrors = true
+    dynamatrixGlobalState.enableDebugMilestones = true
+    dynamatrixGlobalState.enableDebugMilestonesDetails = true
+    dynamatrixGlobalState.enableDebugTraceGithubStatusHighlights = true
+}
+
+//if (true)  // <<< (Un-)comment away in select runs/branches
+//if (false) // <<< (Un-)comment away in select runs/branches
+if ( env?.BRANCH_NAME ==~ /.*fightwarn.*/ )
+{
+    dynamatrixGlobalState.enableDebugTraceGithubStatusHighlights = true
+}
+
+dynamatrixPipeline(dynacfgBase, dynacfgPipeline)

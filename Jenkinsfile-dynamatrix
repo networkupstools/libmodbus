@@ -219,6 +219,19 @@ set | sort -n """
         }
     }
 
+@NonCPS
+def stageNameFunc_ShellcheckCustom(DynamatrixSingleBuildConfig dsbc) {
+    // NOTE: A direct Closure seems to confuse Jenkins/Groovy CPS, so using a func
+    def labelMap = dsbc.getKVMap(false)
+    String sn = ""
+    if (labelMap.containsKey("OS_FAMILY"))
+        sn += labelMap.OS_FAMILY + "-"
+    if (labelMap.containsKey("OS_DISTRO"))
+        sn += labelMap.OS_DISTRO + "-"
+    return "MATRIX_TAG=\"${sn}shellcheckCustom\""
+}
+//dynacfgPipeline.shellcheck.stageNameFunc = this.&stageNameFunc_ShellcheckCustom
+
 ///////////////////////////////////////////////////////////////////////////
 
 // Hacky big switch for a max debug option

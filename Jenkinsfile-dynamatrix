@@ -181,8 +181,10 @@ set | sort -n """
                     // token DISTCHECK_FLAGS in its stage (split by make later).
                     ['LANG=C','LC_ALL=C','TZ=UTC',
                      'CONFIG_OPTS=--enable-Werror --with-libusb=auto --enable-static --enable-shared',
+                     // FIXME: This one only applies to OmniOS:
                      'PKG_CONFIG_PATH=/opt/ooce/lib/${BITS}/pkgconfig',
-		     'AUTOMAKE_VERSION=1.16','AUTOCONF_VERSION=2.69'
+                     // FIXME: This one primarily applies to OpeBSD:
+                     'AUTOMAKE_VERSION=1.16','AUTOCONF_VERSION=2.69'
                     ]
                     ],
 

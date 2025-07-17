@@ -199,7 +199,8 @@ set | sort -n """
                 dynamatrixAxesLabels: [~/^OS_DISTRO/, 'COMPILER'],
                 excludeCombos: dynacfgPipeline.excludeCombos_DEFAULT_STRICT_C
                     + [dynacfgPipeline.axisCombos_WINDOWS_CROSS]
-                    + [~/^OS_DISTRO=ubuntu-trusty/, ~/^COMPILER=clang/] //old CLANGVER
+                    + [~/^OS_DISTRO=ubuntu-trusty/, ~/^COMPILER=CLANG/] //old CLANGVER
+                    + [~/^OS_DISTRO=ubuntu-trusty/, ~/^COMPILER=clang/] //old CLANGVER, in case of typos
                 ], body)
             }, // getParStages
         //'bodyParStages': {}

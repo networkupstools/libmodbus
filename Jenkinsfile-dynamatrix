@@ -196,11 +196,10 @@ set | sort -n """
                 runAllowedFailure: true,
                 //dynamatrixAxesLabels: ['OS_FAMILY', 'OS_DISTRO', '${COMPILER}VER', 'ARCH${ARCH_BITS}'],
                 //dynamatrixAxesLabels: [~/^OS/, '${COMPILER}VER', 'ARCH${ARCH_BITS}'],
-                dynamatrixAxesLabels: [~/^OS_DISTRO/, 'COMPILER'],
+                dynamatrixAxesLabels: [~/OS_DISTRO/, 'COMPILER'],
                 excludeCombos: dynacfgPipeline.excludeCombos_DEFAULT_STRICT_C
                     + [dynacfgPipeline.axisCombos_WINDOWS_CROSS]
-                    + [~/^OS_DISTRO=ubuntu-trusty/, ~/^COMPILER=CLANG/] //old CLANGVER
-                    + [~/^OS_DISTRO=ubuntu-trusty/, ~/^COMPILER=clang/] //old CLANGVER, in case of typos
+                    + [~/OS_DISTRO=ubuntu-trusty/, ~/COMPILER=(CLANG|clang)/] //old CLANGVER: tons of `clang: error: argument unused during compilation: '-I ...'`
                 ], body)
             }, // getParStages
         //'bodyParStages': {}

@@ -426,10 +426,12 @@ static int _modbus_rtu_usb_connect(modbus_t *ctx)
     for (i = 0; i < devs_len; i++) {
         d = devs[i];
 
+#if (defined HAVE_LIBUSB_GET_PARENT) && HAVE_LIBUSB_GET_PARENT
         /* Root ports have no parent, we can skip them */
         if (libusb_get_parent(d) == NULL) {
             continue;
         }
+#endif
 
         r = libusb_get_device_descriptor(d, &dev_desc);
         if (r != LIBUSB_SUCCESS) {

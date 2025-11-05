@@ -321,7 +321,9 @@ AS_IF([test "x$with_libusb" != "xno"], [
     ])
 
     AS_IF([test x"${LIBUSB_LIBS}" != x], [
-        AC_CHECK_LIB(${LIBUSB_LIB_TRYNAME}, libusb_get_parent, [:], [LIBUSB_LIBS=""])
+        AC_CHECK_LIB(${LIBUSB_LIB_TRYNAME}, libusb_get_parent, [
+            AC_DEFINE([HAVE_LIBUSB_GET_PARENT], 1, [defined if libusb_get_parent is available])
+        ])
     ])
 
     AS_IF([test x"${LIBUSB_LIBS}" != x], [

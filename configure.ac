@@ -291,8 +291,13 @@ AS_IF([test "x$with_libusb" != "xno"], [
     AS_IF([test x"${LIBUSB_LIBS}" != x], [
         AC_MSG_RESULT([yes])
 
-        dnl # FIXME: Extract the name from pkg-config data?
+        dnl # Extract the name from pkg-config data, if we can
         LIBUSB_LIB_TRYNAME="usb-1.0"
+        for TOKEN in ${LIBUSB_LIBS} ; do
+            case "${TOKEN}" in
+                -lusb*) LIBUSB_LIB_TRYNAME="`echo "${TOKEN}" | sed 's,^-l,,'`" ;;
+            esac
+        done
 
         CFLAGS="${SAVED_CFLAGS} ${LIBUSB_CFLAGS}"
         LIBS="${SAVED_LIBS} ${LIBUSB_LIBS}"

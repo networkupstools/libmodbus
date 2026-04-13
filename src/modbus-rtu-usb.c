@@ -221,11 +221,30 @@ static int _modbus_rtu_usb_receive(modbus_t *ctx, uint8_t *req)
 static ssize_t _modbus_rtu_usb_recv_more(modbus_t *ctx, unsigned int timeout_msecs)
 {
     uint8_t usb_report[_MODBUS_USB_REPORT_SIZE];
-    int transferred, r;
+    int transferred, r, payload_len;
     modbus_rtu_usb_t *ctx_rtu_usb = ctx->backend_data;
 
     if (ctx_rtu_usb->device_handle == NULL) {
         errno = EINVAL;
+        return -1;
+    }
+
+    /* Compact buffer if needed to make room for new data */
+    if (ctx_rtu_usb->usb_buffer_start > 0) {
+        int buffered = ctx_rtu_usb->usb_buffer_end - ctx_rtu_usb->usb_buffer_start;
+        if (buffered > 0) {
+            memmove(ctx_rtu_usb->usb_buffer,
+                    ctx_rtu_usb->usb_buffer + ctx_rtu_usb->usb_buffer_start,
+                    buffered);
+        }
+        ctx_rtu_usb->usb_buffer_start = 0;
+        ctx_rtu_usb->usb_buffer_end = buffered;
+    }
+
+    /* Check if there's room for another report */
+    if (ctx_rtu_usb->usb_buffer_end + _MODBUS_USB_PAYLOAD_SIZE >
+        (int) sizeof(ctx_rtu_usb->usb_buffer)) {
+        errno = ENOBUFS;
         return -1;
     }
 
@@ -249,12 +268,16 @@ static ssize_t _modbus_rtu_usb_recv_more(modbus_t *ctx, unsigned int timeout_mse
         break;
     }
 
-    memcpy(ctx_rtu_usb->usb_buffer + ctx_rtu_usb->usb_buffer_end,
-           usb_report + 1,
-           sizeof(usb_report) - 1);
-    ctx_rtu_usb->usb_buffer_end += sizeof(usb_report) - 1;
+    /* Use actual transferred length minus report ID byte */
+    payload_len = (transferred > 1) ? transferred - 1 : 0;
+    if (payload_len > 0) {
+        memcpy(ctx_rtu_usb->usb_buffer + ctx_rtu_usb->usb_buffer_end,
+               usb_report + 1,
+               payload_len);
+        ctx_rtu_usb->usb_buffer_end += payload_len;
+    }
 
-    return sizeof(usb_report) - 1;
+    return payload_len;
 }
 
 static ssize_t _modbus_rtu_usb_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length)

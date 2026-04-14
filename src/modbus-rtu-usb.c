@@ -516,6 +516,8 @@ static int _modbus_rtu_usb_connect(modbus_t *ctx)
             continue;
         }
 
+        libusb_reset_device(dev_handle);
+
         if (dev_desc.iManufacturer) {
             memset(&vendor_buffer, 0, sizeof(vendor_buffer));
             r = libusb_get_string_descriptor_ascii(dev_handle,

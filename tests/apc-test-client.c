@@ -81,10 +81,12 @@ int main(void)
         _print_register_int(register_buf, "REG_OUTPUT_0_CURRENT", 5.0f);
     }
 
+    memset(register_buf, 0, sizeof(register_buf));
     if (_read_registers(ctx, 564, 8, register_buf)) {
         _print_register_str(register_buf, "REG_SERIAL_NUMBER", 8);
     }
 
+    memset(register_buf, 0, sizeof(register_buf));
     if (_read_registers(ctx, 532, 16, register_buf)) {
         _print_register_str(register_buf, "REG_MODEL", 16);
     }

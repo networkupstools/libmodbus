@@ -149,7 +149,7 @@ static int _modbus_rtu_usb_send_msg_pre(uint8_t *req, int req_length)
 static ssize_t _modbus_rtu_usb_send(modbus_t *ctx, const uint8_t *req, int req_length)
 {
     uint8_t usb_report[_MODBUS_USB_REPORT_SIZE];
-    int to_transfer, transferred, total_transferred, total_remaining, r;
+    int payload_chunk_len, transferred, total_transferred, total_remaining, r;
     modbus_rtu_usb_t *ctx_rtu_usb = ctx->backend_data;
 
     if (ctx_rtu_usb->device_handle == NULL) {
@@ -160,15 +160,18 @@ static ssize_t _modbus_rtu_usb_send(modbus_t *ctx, const uint8_t *req, int req_l
     total_transferred = 0;
     total_remaining = req_length;
     while (total_remaining > 0) {
-        to_transfer = total_remaining % _MODBUS_USB_PAYLOAD_SIZE;
+        /* USB 2.0 Full Speed only supports 64 bytes per transfer,
+         * one byte is used for the report ID, leaving 63 to the payload*/
         usb_report[0] = ctx_rtu_usb->rx_report_id;
-        memcpy(usb_report + 1, req, to_transfer);
-        memset(usb_report + 1 + to_transfer, 0, sizeof(usb_report) - 1 - to_transfer);
+        /* Transfer in payload chunks of 63 until we have less than 63 left */
+        payload_chunk_len = (total_remaining > _MODBUS_USB_PAYLOAD_SIZE)
+            ? _MODBUS_USB_PAYLOAD_SIZE : total_remaining;
+        memcpy(usb_report + 1, req + total_transferred, payload_chunk_len);
 
         r = libusb_interrupt_transfer(ctx_rtu_usb->device_handle,
                                       LIBUSB_ENDPOINT_OUT | ctx_rtu_usb->endpoint,
                                       usb_report,
-                                      sizeof(usb_report),
+                                      payload_chunk_len + 1, /* +1 for report ID */
                                       &transferred,
                                       0);
         if (r != LIBUSB_SUCCESS) {
@@ -176,12 +179,12 @@ static ssize_t _modbus_rtu_usb_send(modbus_t *ctx, const uint8_t *req, int req_l
             return -1;
         }
 
-        total_remaining -= to_transfer;
-        total_transferred += to_transfer;
-
-        if (transferred < to_transfer + 1) {
+        if (transferred < payload_chunk_len + 1) {
             break;
         }
+
+        total_remaining -= transferred - 1;
+        total_transferred += transferred - 1;
     }
 
     return total_transferred;
@@ -218,11 +221,30 @@ static int _modbus_rtu_usb_receive(modbus_t *ctx, uint8_t *req)
 static ssize_t _modbus_rtu_usb_recv_more(modbus_t *ctx, unsigned int timeout_msecs)
 {
     uint8_t usb_report[_MODBUS_USB_REPORT_SIZE];
-    int transferred, r;
+    int transferred, r, payload_len;
     modbus_rtu_usb_t *ctx_rtu_usb = ctx->backend_data;
 
     if (ctx_rtu_usb->device_handle == NULL) {
         errno = EINVAL;
+        return -1;
+    }
+
+    /* Compact buffer if needed to make room for new data */
+    if (ctx_rtu_usb->usb_buffer_start > 0) {
+        int buffered = ctx_rtu_usb->usb_buffer_end - ctx_rtu_usb->usb_buffer_start;
+        if (buffered > 0) {
+            memmove(ctx_rtu_usb->usb_buffer,
+                    ctx_rtu_usb->usb_buffer + ctx_rtu_usb->usb_buffer_start,
+                    buffered);
+        }
+        ctx_rtu_usb->usb_buffer_start = 0;
+        ctx_rtu_usb->usb_buffer_end = buffered;
+    }
+
+    /* Check if there's room for another report */
+    if (ctx_rtu_usb->usb_buffer_end + _MODBUS_USB_PAYLOAD_SIZE >
+        (int) sizeof(ctx_rtu_usb->usb_buffer)) {
+        errno = ENOBUFS;
         return -1;
     }
 
@@ -246,12 +268,16 @@ static ssize_t _modbus_rtu_usb_recv_more(modbus_t *ctx, unsigned int timeout_mse
         break;
     }
 
-    memcpy(ctx_rtu_usb->usb_buffer + ctx_rtu_usb->usb_buffer_end,
-           usb_report + 1,
-           sizeof(usb_report) - 1);
-    ctx_rtu_usb->usb_buffer_end += sizeof(usb_report) - 1;
+    /* Use actual transferred length minus report ID byte */
+    payload_len = (transferred > 1) ? transferred - 1 : 0;
+    if (payload_len > 0) {
+        memcpy(ctx_rtu_usb->usb_buffer + ctx_rtu_usb->usb_buffer_end,
+               usb_report + 1,
+               payload_len);
+        ctx_rtu_usb->usb_buffer_end += payload_len;
+    }
 
-    return sizeof(usb_report) - 1;
+    return payload_len;
 }
 
 static ssize_t _modbus_rtu_usb_recv(modbus_t *ctx, uint8_t *rsp, int rsp_length)
@@ -489,6 +515,8 @@ static int _modbus_rtu_usb_connect(modbus_t *ctx)
             }
             continue;
         }
+
+        libusb_reset_device(dev_handle);
 
         if (dev_desc.iManufacturer) {
             memset(&vendor_buffer, 0, sizeof(vendor_buffer));

@@ -56,7 +56,7 @@ static int _match_callback(const modbus_usb_device_t *device)
 int main(void)
 {
     modbus_t *ctx;
-    uint16_t register_buf[16];
+    uint16_t register_buf[MODBUS_MAX_READ_REGISTERS];
 
     ctx = modbus_new_rtu_usb(MODBUS_USB_MODE_APC, _match_callback);
 
@@ -73,6 +73,18 @@ int main(void)
         return -1;
     }
 
+    /* Test a long read of 120 registers.
+     *
+     * MPAO-98KJ7F_R1_EN 4.4.4 Framing:
+     * Shows maximum of 61 + (63 * 3) + 2 = 252 bytes / 2 = 126 registers of payload,
+     * split across 5 interrupt transfers. This is one more than
+     * MODBUS_MAX_READ_REGISTERS (125) but but requesting more than 120 registers
+     * seems to cause immediately return an error response.
+     */
+    if (_read_registers(ctx, 516, 120, register_buf)) {
+        printf("Long read successful\n");
+    }
+
     if (_read_registers(ctx, 151, 1, register_buf)) {
         _print_register_int(register_buf, "REG_INPUT_0_VOLTAGE", 6.0f);
     }
@@ -81,10 +93,12 @@ int main(void)
         _print_register_int(register_buf, "REG_OUTPUT_0_CURRENT", 5.0f);
     }
 
+    memset(register_buf, 0, sizeof(register_buf));
     if (_read_registers(ctx, 564, 8, register_buf)) {
         _print_register_str(register_buf, "REG_SERIAL_NUMBER", 8);
     }
 
+    memset(register_buf, 0, sizeof(register_buf));
     if (_read_registers(ctx, 532, 16, register_buf)) {
         _print_register_str(register_buf, "REG_MODEL", 16);
     }

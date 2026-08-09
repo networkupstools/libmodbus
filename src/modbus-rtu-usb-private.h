@@ -34,6 +34,10 @@ static const uint8_t _MODBUS_RTU_USB_Default_TX_Report_Id = 0x89;
 static const int _MODBUS_USB_REPORT_SIZE = _MODBUS_USB_REPORT_SIZE_VAL;
 static const int _MODBUS_USB_PAYLOAD_SIZE = _MODBUS_USB_REPORT_SIZE_VAL - 1;
 
+/* Timeout for the interrupt OUT transfer, in milliseconds. A device that never
+ * services the endpoint would otherwise block the caller forever. */
+#define _MODBUS_USB_SEND_TIMEOUT_MS       5000
+
 typedef struct _modbus_rtu_usb {
     /* Device selection callback */
     modbus_usb_device_selection_callback_t callback;
@@ -41,6 +45,10 @@ typedef struct _modbus_rtu_usb {
     char *path;
     /* Libusb device handle */
     struct libusb_device_handle *device_handle;
+    /* Interface claimed for I/O, or -1 if none is held */
+    int claimed_interface;
+    /* Reset the device when opening it (default on) */
+    int reset_on_open;
     /* USB endpoint */
     int endpoint;
     /* RTU USB report ids */

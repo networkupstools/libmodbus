@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifndef _MSC_VER
 #include <unistd.h>
 #endif
@@ -225,11 +226,30 @@ static int _modbus_rtu_usb_receive(modbus_t *ctx, uint8_t *req)
     return rc;
 }
 
+static uint64_t _modbus_rtu_usb_now_usecs(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t) ts.tv_sec * 1000000 + (uint64_t) (ts.tv_nsec / 1000);
+}
+
+/* Wait for one Modbus report and append its payload to the receive buffer.
+ * timeout_msecs bounds the whole wait (0 waits forever): the device
+ * interleaves unsolicited HID notification reports on the same interrupt
+ * endpoint, and granting each skipped report a fresh timeout lets a
+ * notification stream defer the deadline indefinitely (APC's AN178 sec 3.2.2
+ * rate-limits notifications to one per 15 s, but a degraded device has been
+ * measured emitting them at 1 Hz, which would keep a 2 s response timeout
+ * from ever expiring). */
 static ssize_t _modbus_rtu_usb_recv_more(modbus_t *ctx, unsigned int timeout_msecs)
 {
     uint8_t usb_report[_MODBUS_USB_REPORT_SIZE];
     int transferred, r, payload_len;
+    uint64_t deadline_usecs = 0;
     modbus_rtu_usb_t *ctx_rtu_usb = ctx->backend_data;
+
+    if (timeout_msecs > 0)
+        deadline_usecs = _modbus_rtu_usb_now_usecs() + (uint64_t) timeout_msecs * 1000;
 
     if (ctx_rtu_usb->device_handle == NULL) {
         errno = EINVAL;
@@ -256,12 +276,24 @@ static ssize_t _modbus_rtu_usb_recv_more(modbus_t *ctx, unsigned int timeout_mse
     }
 
     while (1) {
+        unsigned int remaining_msecs = 0; /* libusb: 0 waits forever */
+
+        if (timeout_msecs > 0) {
+            uint64_t now_usecs = _modbus_rtu_usb_now_usecs();
+            if (now_usecs >= deadline_usecs) {
+                errno = ETIMEDOUT;
+                return -1;
+            }
+            remaining_msecs =
+                (unsigned int) ((deadline_usecs - now_usecs + 999) / 1000);
+        }
+
         r = libusb_interrupt_transfer(ctx_rtu_usb->device_handle,
                                       LIBUSB_ENDPOINT_IN | ctx_rtu_usb->endpoint,
                                       usb_report,
                                       sizeof(usb_report),
                                       &transferred,
-                                      timeout_msecs);
+                                      remaining_msecs);
         if (r != LIBUSB_SUCCESS) {
             errno = _usb_error_to_errno(r);
             return -1;
@@ -786,6 +818,31 @@ static int _modbus_rtu_usb_select(modbus_t *ctx,
     }
 
     timeout_msecs = (tv->tv_sec * 1000) + (tv->tv_usec / 1000);
+
+    /* One deadline for the whole wait: without it, each report of a
+     * multi-report reply grants the device a fresh full timeout. */
+    if (timeout_msecs > 0) {
+        uint64_t deadline_usecs =
+            _modbus_rtu_usb_now_usecs() + (uint64_t) timeout_msecs * 1000;
+
+        while ((ctx_rtu_usb->usb_buffer_end - ctx_rtu_usb->usb_buffer_start) <
+               length_to_read) {
+            uint64_t now_usecs = _modbus_rtu_usb_now_usecs();
+            unsigned int remaining_msecs;
+
+            if (now_usecs >= deadline_usecs) {
+                errno = ETIMEDOUT;
+                return -1;
+            }
+            remaining_msecs =
+                (unsigned int) ((deadline_usecs - now_usecs + 999) / 1000);
+            if (_modbus_rtu_usb_recv_more(ctx, remaining_msecs) <= 0) {
+                return -1;
+            }
+        }
+
+        return 0;
+    }
 
     while ((ctx_rtu_usb->usb_buffer_end - ctx_rtu_usb->usb_buffer_start) <
            length_to_read) {

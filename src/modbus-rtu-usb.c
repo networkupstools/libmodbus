@@ -746,8 +746,16 @@ static int _modbus_rtu_usb_flush(modbus_t *ctx)
     int rc;
     int rc_sum = 0;
 
+    /* Drain until the line has been idle for a full Modbus inter-frame
+     * interval. APC's AN176 (sec 4.2.2) specifies a 35 ms minimum inter-frame
+     * for these devices, and apcupsd's field-proven driver waits 45 ms ("spec
+     * is 35, increase due to UPS missing messages occasionally"). The previous
+     * 10 ms window returned before a late reply could arrive, which made every
+     * flush-based recovery a measured no-op: a reply abandoned by a timed-out
+     * request would survive the flush and be mistaken for the answer to the
+     * next request. */
     for (;;) {
-        rc = _modbus_rtu_usb_recv_more(ctx, 10);
+        rc = _modbus_rtu_usb_recv_more(ctx, 45);
 
         if (rc < 0) {
             if (errno == ETIMEDOUT)

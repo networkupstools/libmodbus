@@ -614,16 +614,6 @@ static int _modbus_rtu_usb_connect(modbus_t *ctx)
             continue;
         }
 
-        /* Resetting the device on open recovers hardware whose host/device
-         * framing has lost synchronisation, but it is fatal on others: an APC
-         * Smart-UPS X1500 (051d:0003) never services its interrupt OUT
-         * endpoint again afterwards, and only physically reseating the USB
-         * cable restores it. Note this runs for every device on the bus,
-         * before the match callback is consulted. */
-        if (ctx_rtu_usb->reset_on_open) {
-            libusb_reset_device(dev_handle);
-        }
-
         if (dev_desc.iManufacturer) {
             memset(&vendor_buffer, 0, sizeof(vendor_buffer));
             r = libusb_get_string_descriptor_ascii(dev_handle,
@@ -683,6 +673,19 @@ static int _modbus_rtu_usb_connect(modbus_t *ctx)
                 printf("Found Device %lld (Path %s):\n", (long long int) i, path_buffer);
                 printf("  Vendor ID: 0x%04x\n", ud.vid);
                 printf("  Product ID: 0x%04x\n", ud.pid);
+            }
+
+            /* Reset only the matched device, and only after the selection
+             * callback has run, so the callback can veto it with
+             * modbus_rtu_usb_set_reset_on_open(ctx, 0): a reset recovers
+             * hardware whose host/device framing has lost synchronisation,
+             * but on some devices it is expensive or fatal -- an APC
+             * Smart-UPS (051d:0003) goes deaf for 1.5-2.5 minutes after
+             * each reset, and consecutive resets in close succession left
+             * one servicing nothing on its interrupt endpoints until its
+             * USB cable was physically reseated. */
+            if (ctx_rtu_usb->reset_on_open) {
+                libusb_reset_device(dev_handle);
             }
 
             /* Claim the HID interface before any I/O on it. */

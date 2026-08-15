@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #ifndef _MSC_VER
 #include <unistd.h>
 #endif
@@ -162,6 +163,13 @@ static ssize_t _modbus_rtu_usb_send(modbus_t *ctx, const uint8_t *req, int req_l
     while (total_remaining > 0) {
         /* USB 2.0 Full Speed only supports 64 bytes per transfer,
          * one byte is used for the report ID, leaving 63 to the payload*/
+
+        /* Send a full-length report, zero padded. The HID report descriptor
+         * declares the output report as 63 bytes; a short transfer is accepted
+         * by the host controller but ignored by at least some devices (an APC
+         * Smart-UPS X1500 never answers one, and its Modbus engine is left
+         * unresponsive until the USB cable is physically reseated). */
+        memset(usb_report, 0, _MODBUS_USB_REPORT_SIZE_VAL);
         usb_report[0] = ctx_rtu_usb->rx_report_id;
         /* Transfer in payload chunks of 63 until we have less than 63 left */
         payload_chunk_len = (total_remaining > _MODBUS_USB_PAYLOAD_SIZE)
@@ -171,20 +179,20 @@ static ssize_t _modbus_rtu_usb_send(modbus_t *ctx, const uint8_t *req, int req_l
         r = libusb_interrupt_transfer(ctx_rtu_usb->device_handle,
                                       LIBUSB_ENDPOINT_OUT | ctx_rtu_usb->endpoint,
                                       usb_report,
-                                      payload_chunk_len + 1, /* +1 for report ID */
+                                      _MODBUS_USB_REPORT_SIZE_VAL,
                                       &transferred,
-                                      0);
+                                      _MODBUS_USB_SEND_TIMEOUT_MS);
         if (r != LIBUSB_SUCCESS) {
             errno = _usb_error_to_errno(r);
             return -1;
         }
 
-        if (transferred < payload_chunk_len + 1) {
+        if (transferred < _MODBUS_USB_REPORT_SIZE_VAL) {
             break;
         }
 
-        total_remaining -= transferred - 1;
-        total_transferred += transferred - 1;
+        total_remaining -= payload_chunk_len;
+        total_transferred += payload_chunk_len;
     }
 
     return total_transferred;
@@ -218,11 +226,30 @@ static int _modbus_rtu_usb_receive(modbus_t *ctx, uint8_t *req)
     return rc;
 }
 
+static uint64_t _modbus_rtu_usb_now_usecs(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t) ts.tv_sec * 1000000 + (uint64_t) (ts.tv_nsec / 1000);
+}
+
+/* Wait for one Modbus report and append its payload to the receive buffer.
+ * timeout_msecs bounds the whole wait (0 waits forever): the device
+ * interleaves unsolicited HID notification reports on the same interrupt
+ * endpoint, and granting each skipped report a fresh timeout lets a
+ * notification stream defer the deadline indefinitely (APC's AN178 sec 3.2.2
+ * rate-limits notifications to one per 15 s, but a degraded device has been
+ * measured emitting them at 1 Hz, which would keep a 2 s response timeout
+ * from ever expiring). */
 static ssize_t _modbus_rtu_usb_recv_more(modbus_t *ctx, unsigned int timeout_msecs)
 {
     uint8_t usb_report[_MODBUS_USB_REPORT_SIZE];
     int transferred, r, payload_len;
+    uint64_t deadline_usecs = 0;
     modbus_rtu_usb_t *ctx_rtu_usb = ctx->backend_data;
+
+    if (timeout_msecs > 0)
+        deadline_usecs = _modbus_rtu_usb_now_usecs() + (uint64_t) timeout_msecs * 1000;
 
     if (ctx_rtu_usb->device_handle == NULL) {
         errno = EINVAL;
@@ -249,12 +276,24 @@ static ssize_t _modbus_rtu_usb_recv_more(modbus_t *ctx, unsigned int timeout_mse
     }
 
     while (1) {
+        unsigned int remaining_msecs = 0; /* libusb: 0 waits forever */
+
+        if (timeout_msecs > 0) {
+            uint64_t now_usecs = _modbus_rtu_usb_now_usecs();
+            if (now_usecs >= deadline_usecs) {
+                errno = ETIMEDOUT;
+                return -1;
+            }
+            remaining_msecs =
+                (unsigned int) ((deadline_usecs - now_usecs + 999) / 1000);
+        }
+
         r = libusb_interrupt_transfer(ctx_rtu_usb->device_handle,
                                       LIBUSB_ENDPOINT_IN | ctx_rtu_usb->endpoint,
                                       usb_report,
                                       sizeof(usb_report),
                                       &transferred,
-                                      timeout_msecs);
+                                      remaining_msecs);
         if (r != LIBUSB_SUCCESS) {
             errno = _usb_error_to_errno(r);
             return -1;
@@ -414,6 +453,65 @@ static int _usb_get_hid_descriptor(modbus_t *ctx,
     return -1;
 }
 
+/* Detach any kernel driver from the device's HID interface and claim it for
+ * ourselves, returning the interface number or a negative libusb error.
+ *
+ * Unlike _usb_get_hid_descriptor(), which releases the interface as soon as it
+ * has read the descriptor, the caller holds this one for the life of the
+ * connection: interrupt transfers issued on an interface owned by the kernel
+ * HID driver are not delivered, and the device's input reports go to that
+ * driver rather than to us. */
+static int _usb_claim_hid_interface(modbus_t *ctx, libusb_device_handle *dev_handle)
+{
+    int r, iface_idx, alt_idx, iface_num;
+    struct libusb_config_descriptor *conf_desc;
+    const struct libusb_interface *iface;
+    const struct libusb_interface_descriptor *alt_iface_desc;
+
+    if ((r = libusb_get_active_config_descriptor(libusb_get_device(dev_handle),
+                                                 &conf_desc)) != LIBUSB_SUCCESS) {
+        return r;
+    }
+
+    for (iface_idx = 0; iface_idx < conf_desc->bNumInterfaces; iface_idx++) {
+        iface = &conf_desc->interface[iface_idx];
+
+        for (alt_idx = 0; alt_idx < iface->num_altsetting; alt_idx++) {
+            alt_iface_desc = &iface->altsetting[alt_idx];
+
+            if (alt_iface_desc->bInterfaceClass != LIBUSB_CLASS_HID) {
+                continue;
+            }
+
+            iface_num = alt_iface_desc->bInterfaceNumber;
+
+            if (libusb_kernel_driver_active(dev_handle, iface_num) == 1) {
+                r = libusb_detach_kernel_driver(dev_handle, iface_num);
+                if (r != LIBUSB_SUCCESS) {
+                    libusb_free_config_descriptor(conf_desc);
+                    return r;
+                }
+            }
+
+            r = libusb_claim_interface(dev_handle, iface_num);
+            if (r != LIBUSB_SUCCESS) {
+                libusb_free_config_descriptor(conf_desc);
+                return r;
+            }
+
+            if (ctx->debug) {
+                printf("Claimed interface %d for Modbus I/O\n", iface_num);
+            }
+
+            libusb_free_config_descriptor(conf_desc);
+            return iface_num;
+        }
+    }
+
+    libusb_free_config_descriptor(conf_desc);
+    return LIBUSB_ERROR_NOT_FOUND;
+}
+
 static int _modbus_rtu_usb_connect(modbus_t *ctx)
 {
     libusb_device **devs, *d;
@@ -516,8 +614,6 @@ static int _modbus_rtu_usb_connect(modbus_t *ctx)
             continue;
         }
 
-        libusb_reset_device(dev_handle);
-
         if (dev_desc.iManufacturer) {
             memset(&vendor_buffer, 0, sizeof(vendor_buffer));
             r = libusb_get_string_descriptor_ascii(dev_handle,
@@ -578,6 +674,32 @@ static int _modbus_rtu_usb_connect(modbus_t *ctx)
                 printf("  Vendor ID: 0x%04x\n", ud.vid);
                 printf("  Product ID: 0x%04x\n", ud.pid);
             }
+
+            /* Reset only the matched device, and only after the selection
+             * callback has run, so the callback can veto it with
+             * modbus_rtu_usb_set_reset_on_open(ctx, 0): a reset recovers
+             * hardware whose host/device framing has lost synchronisation,
+             * but on some devices it is expensive or fatal -- an APC
+             * Smart-UPS (051d:0003) goes deaf for 1.5-2.5 minutes after
+             * each reset, and consecutive resets in close succession left
+             * one servicing nothing on its interrupt endpoints until its
+             * USB cable was physically reseated. */
+            if (ctx_rtu_usb->reset_on_open) {
+                libusb_reset_device(dev_handle);
+            }
+
+            /* Claim the HID interface before any I/O on it. */
+            r = _usb_claim_hid_interface(ctx, dev_handle);
+            if (r < 0) {
+                if (ctx->debug) {
+                    fprintf(stderr,
+                            "failed to claim HID interface: %s\n",
+                            libusb_strerror(r));
+                }
+                libusb_close(dev_handle);
+                continue;
+            }
+            ctx_rtu_usb->claimed_interface = r;
 
             ctx_rtu_usb->device_handle = dev_handle;
 #if defined HAVE_LIBUSB_POLLFD && HAVE_LIBUSB_POLLFD
@@ -643,6 +765,11 @@ static void _modbus_rtu_usb_close(modbus_t *ctx)
     modbus_rtu_usb_t *ctx_rtu_usb = ctx->backend_data;
 
     if (ctx_rtu_usb->device_handle != NULL) {
+        if (ctx_rtu_usb->claimed_interface >= 0) {
+            libusb_release_interface(ctx_rtu_usb->device_handle,
+                                     ctx_rtu_usb->claimed_interface);
+            ctx_rtu_usb->claimed_interface = -1;
+        }
         libusb_close(ctx_rtu_usb->device_handle);
         ctx_rtu_usb->device_handle = NULL;
         _usb_exit();
@@ -654,8 +781,16 @@ static int _modbus_rtu_usb_flush(modbus_t *ctx)
     int rc;
     int rc_sum = 0;
 
+    /* Drain until the line has been idle for a full Modbus inter-frame
+     * interval. APC's AN176 (sec 4.2.2) specifies a 35 ms minimum inter-frame
+     * for these devices, and apcupsd's field-proven driver waits 45 ms ("spec
+     * is 35, increase due to UPS missing messages occasionally"). The previous
+     * 10 ms window returned before a late reply could arrive, which made every
+     * flush-based recovery a measured no-op: a reply abandoned by a timed-out
+     * request would survive the flush and be mistaken for the answer to the
+     * next request. */
     for (;;) {
-        rc = _modbus_rtu_usb_recv_more(ctx, 10);
+        rc = _modbus_rtu_usb_recv_more(ctx, 45);
 
         if (rc < 0) {
             if (errno == ETIMEDOUT)
@@ -686,6 +821,31 @@ static int _modbus_rtu_usb_select(modbus_t *ctx,
     }
 
     timeout_msecs = (tv->tv_sec * 1000) + (tv->tv_usec / 1000);
+
+    /* One deadline for the whole wait: without it, each report of a
+     * multi-report reply grants the device a fresh full timeout. */
+    if (timeout_msecs > 0) {
+        uint64_t deadline_usecs =
+            _modbus_rtu_usb_now_usecs() + (uint64_t) timeout_msecs * 1000;
+
+        while ((ctx_rtu_usb->usb_buffer_end - ctx_rtu_usb->usb_buffer_start) <
+               length_to_read) {
+            uint64_t now_usecs = _modbus_rtu_usb_now_usecs();
+            unsigned int remaining_msecs;
+
+            if (now_usecs >= deadline_usecs) {
+                errno = ETIMEDOUT;
+                return -1;
+            }
+            remaining_msecs =
+                (unsigned int) ((deadline_usecs - now_usecs + 999) / 1000);
+            if (_modbus_rtu_usb_recv_more(ctx, remaining_msecs) <= 0) {
+                return -1;
+            }
+        }
+
+        return 0;
+    }
 
     while ((ctx_rtu_usb->usb_buffer_end - ctx_rtu_usb->usb_buffer_start) <
            length_to_read) {
@@ -756,6 +916,8 @@ static modbus_t *_modbus_new_rtu_usb_common(modbus_usb_modes mode)
     memset(ctx_rtu_usb, 0, sizeof(modbus_rtu_usb_t));
 
     ctx_rtu_usb->endpoint = 1;
+    ctx_rtu_usb->claimed_interface = -1;
+    ctx_rtu_usb->reset_on_open = TRUE;
     ctx_rtu_usb->confirmation_to_ignore = FALSE;
 
     _modbus_rtu_usb_clear_buffers(ctx);
@@ -889,6 +1051,29 @@ int modbus_rtu_usb_set_callback(modbus_t *ctx,
 
     ctx_rtu_usb = ctx->backend_data;
     ctx_rtu_usb->callback = callback;
+
+    return 0;
+}
+
+/* Enable or disable the USB reset performed when opening the device.
+ *
+ * Enabled by default, preserving existing behaviour: the reset recovers
+ * devices whose framing has desynchronised, where reads otherwise return stale
+ * data belonging to earlier requests. It is fatal on some hardware, however --
+ * an APC Smart-UPS X1500 stops servicing its interrupt OUT endpoint entirely
+ * once reset, recoverable only by reseating the USB cable -- so callers
+ * working with such a device need a way to turn it off. */
+int modbus_rtu_usb_set_reset_on_open(modbus_t *ctx, int enabled)
+{
+    modbus_rtu_usb_t *ctx_rtu_usb;
+
+    if (ctx == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    ctx_rtu_usb = ctx->backend_data;
+    ctx_rtu_usb->reset_on_open = enabled ? TRUE : FALSE;
 
     return 0;
 }

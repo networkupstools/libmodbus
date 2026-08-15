@@ -62,6 +62,12 @@ modbus_rtu_usb_set_callback(modbus_t *ctx,
 
 MODBUS_API int modbus_rtu_usb_set_report_ids(modbus_t *ctx, uint8_t rx, uint8_t tx);
 
+/* Enable or disable the USB device reset performed when opening the device.
+ * Enabled by default. The reset recovers devices whose host/device framing has
+ * lost synchronisation, but is fatal on some hardware -- see
+ * modbus_rtu_usb_set_reset_on_open() notes in modbus-rtu-usb.c. */
+MODBUS_API int modbus_rtu_usb_set_reset_on_open(modbus_t *ctx, int enabled);
+
 MODBUS_END_DECLS
 
 #endif /* MODBUS_RTU_USB_H */
